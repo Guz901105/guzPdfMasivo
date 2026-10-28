@@ -201,7 +201,7 @@
           </button>
           <button id="btn-descargar-todos" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg text-xs flex items-center gap-1.5 transition-all disabled:opacity-50" disabled>
             <i data-lucide="save" class="w-3.5 h-3.5"></i>
-            Guardar Todos (Individuales)
+            Guardar Todos en una Carpeta
           </button>
         </div>
       </div>
@@ -832,42 +832,66 @@
       const validados = resultadosValidacion.filter(r => r.estado === 'OK');
       if (validados.length === 0) return;
 
+      if (!window.showDirectoryPicker) {
+        mostrarAlerta('Función no disponible', 'Tu navegador no permite seleccionar una carpeta para guardar archivos. Usa un navegador compatible como Chrome o Edge, o descarga el ZIP.');
+        return;
+      }
+
+      let carpetaDestino;
+      try {
+        carpetaDestino = await window.showDirectoryPicker({ mode: 'readwrite' });
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          mostrarAlerta('Error al seleccionar carpeta', 'No se pudo abrir la carpeta de destino: ' + e.message);
+        }
+        return;
+      }
+
       btnDescargarTodos.disabled = true;
-      btnDescargarTodos.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Guardando (${validados.length})...`;
+      btnDescargarTodos.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Guardando (0/${validados.length})...`;
       if (window.lucide) lucide.createIcons();
 
+      let guardados = 0;
+      const errores = [];
+      const nombresUsados = new Set();
       for (let i = 0; i < validados.length; i++) {
         const item = validados[i];
         try {
           const pdfBytes = await crearPdfFusionado(item);
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          
-          const a = document.createElement('a');
-          a.style.display = 'none';
-          a.href = url;
-          // Conserva el nombre original intacto del expediente de soporte
-          a.download = item.soporteNombreOriginal;
-          
-          document.body.appendChild(a);
-          a.click();
-          
-          // Limpieza inmediata del elemento del DOM
-          setTimeout(() => {
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-          }, 1000);
-          
-          // Pausa entre descargas masivas para evitar bloqueos del navegador
-          await new Promise(res => setTimeout(res, 400));
+          const nombreOriginal = item.soporteNombreOriginal || 'expediente.pdf';
+          const nombreBase = nombreOriginal.replace(/[\\/:*?"<>|]/g, '_');
+          const punto = nombreBase.lastIndexOf('.');
+          const base = punto > 0 ? nombreBase.slice(0, punto) : nombreBase;
+          const extension = punto > 0 ? nombreBase.slice(punto) : '.pdf';
+          let nombreDestino = nombreBase;
+          let consecutivo = 2;
+          while (nombresUsados.has(nombreDestino.toLocaleLowerCase())) {
+            nombreDestino = `${base} (${consecutivo++})${extension}`;
+          }
+          nombresUsados.add(nombreDestino.toLocaleLowerCase());
+
+          const archivoDestino = await carpetaDestino.getFileHandle(nombreDestino, { create: true });
+          const escritor = await archivoDestino.createWritable();
+          await escritor.write(pdfBytes);
+          await escritor.close();
+          guardados++;
         } catch (e) {
           console.error('Error procesando descarga de:', item.soporteNombreOriginal, e);
+          errores.push(item.soporteNombreOriginal || 'Expediente sin nombre');
         }
+        btnDescargarTodos.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Guardando (${i + 1}/${validados.length})...`;
+        if (window.lucide) lucide.createIcons();
       }
 
       btnDescargarTodos.disabled = false;
-      btnDescargarTodos.innerHTML = `<i data-lucide="save" class="w-3.5 h-3.5"></i> Guardar Todos (Individuales)`;
+      btnDescargarTodos.innerHTML = `<i data-lucide="save" class="w-3.5 h-3.5"></i> Guardar Todos en una Carpeta`;
       if (window.lucide) lucide.createIcons();
+
+      if (errores.length > 0) {
+        mostrarAlerta('Guardado parcial', `Se guardaron ${guardados} de ${validados.length} archivos. No se pudieron guardar: ${errores.join(', ')}`);
+      } else {
+        mostrarAlerta('Archivos guardados', `Se guardaron ${guardados} archivos en la carpeta seleccionada con el nombre de cada expediente de soporte.`);
+      }
     }
 
     async function descargarTodosEnZip() {
